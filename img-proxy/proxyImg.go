@@ -5,25 +5,33 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 )
 
+func getClientIP(r *http.Request) string {
+	// 尝试从 X-Real-IP 和 X-Forwarded-For 头部获取真实 IP
+	clientIP := r.Header.Get("X-Real-IP")
+	if clientIP == "" {
+		clientIP = r.Header.Get("X-Forwarded-For")
+	}
+	if clientIP == "" {
+		// 如果没有找到头部，就退回到 RemoteAddr
+		clientIP, _, _ = net.SplitHostPort(r.RemoteAddr)
+	}
+	return clientIP
+}
+
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	// 获取客户端的 IP 地址
-	clientIP := r.RemoteAddr
-	if strings.Contains(clientIP, ":") {
-		// 如果 IP 地址是带端口的 (比如 [::1]:8080)，则去掉端口
-		clientIP = strings.Split(clientIP, ":")[0]
-	}
+	clientIP := getClientIP(r)
 
 	// 获取请求 URL 参数
-	path := r.URL.Path[len("/img-proxy/"):]
-
-	// 判断是否有 URL 部分
+	path := r.URL.Path[len("/proxy/"):]
 	if path == "" {
-		http.Error(w, "Missing URL to img-proxy", http.StatusBadRequest)
+		http.Error(w, "Missing URL to proxy", http.StatusBadRequest)
 		return
 	}
 
@@ -34,10 +42,28 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		path = "https:/" + path[6:]
 	}
 
+	// 获取查询字符串部分
+	queryString := r.URL.RawQuery
+	if queryString != "" {
+		path = path + "?" + queryString
+	}
+
 	// 解析目标 URL
 	targetURL, err := url.Parse(path)
 	if err != nil {
 		http.Error(w, "Invalid URL", http.StatusBadRequest)
+		return
+	}
+
+	// 解码 URL
+	decodedPath, err := url.QueryUnescape(targetURL.String())
+	if err != nil {
+		http.Error(w, "Failed to decode the URL", http.StatusBadRequest)
+		return
+	}
+	targetURL, err = url.Parse(decodedPath)
+	if err != nil {
+		http.Error(w, "Invalid decoded URL", http.StatusBadRequest)
 		return
 	}
 
@@ -71,7 +97,7 @@ func main() {
 
 	// 启动服务器
 	http.HandleFunc("/proxy/", proxyHandler)
-	fmt.Printf("Starting img-proxy server on :%s\n", *port)
+	fmt.Printf("Starting proxy server on :%s\n", *port)
 	if err := http.ListenAndServe(":"+*port, nil); err != nil {
 		fmt.Println("Error starting server:", err)
 	}
